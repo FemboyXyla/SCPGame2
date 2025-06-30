@@ -1,0 +1,198 @@
+--[[
+
+PROPERTY OF VERSIFY
+Mememoxzine, CEO
+
+v.1.0.0 (16 June 2024)
+
+]]
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ProximityPromptService = game:GetService("ProximityPromptService")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local Shared_VD = ReplicatedStorage:FindFirstChild("Shared_VersifyDoor")
+
+assert(Shared_VD, "Shared_VersifyDoor cannot be found, did you properly set-up Versify Door System? [!]")
+
+local Configuration = require(Shared_VD.Configuration)
+local UILoader = require(Shared_VD.UILoader)
+local DoorTerminalUI = require(Shared_VD.Modules.DoorTerminal)
+local ContextActionUtility = require(Shared_VD.Modules.ContextActionUtility)
+local DebugMode = Configuration.DebugMode
+
+local Player = game.Players.LocalPlayer
+
+local UIStyle = Configuration.UI_Style
+
+local LoadedUIStyles
+
+local function getActiveGamepad()
+	local activeGamepad = nil
+
+	local connectedGamepads = UserInputService:GetConnectedGamepads()
+
+	if #connectedGamepads > 0 then
+		for _, gamepad in connectedGamepads do
+			if activeGamepad == nil or gamepad.Value < activeGamepad.Value then
+				activeGamepad = gamepad
+			end
+		end
+	end
+
+	if activeGamepad == nil then  -- Nothing is connected; set up for "Gamepad1"
+		activeGamepad = Enum.UserInputType.Gamepad1
+	end
+
+	return activeGamepad
+end
+
+if (not Shared_VD.UIStyles:FindFirstChild(UIStyle)) then
+	warn("Specified UI Style does NOT exist, replacing to Classic [!]")
+	
+	UIStyle = "Classic"
+else
+	if (UIStyle ~= "Classic") then
+		UIStyle = Shared_VD.UIStyles:FindFirstChild(UIStyle)
+
+		if (not UIStyle) then
+			warn("[!] UIStyle doesn't exist! | Versify Door System")
+			
+			return
+		end
+		
+		LoadedUIStyles = require(UIStyle)
+	end
+end
+
+Shared_VD.Remotes.ReplicateDoor.OnClientEvent:Connect(function(instance, tweenInfo, goal)
+	if (instance) then
+		game:GetService("TweenService"):Create(instance, TweenInfo.new(table.unpack(tweenInfo)), goal):Play()
+	end
+end)
+
+local DoorTerminal
+local PromptPosition
+local Heartbeat
+
+local last = tick()
+
+local HumanoidConn
+local CharacterConn
+
+Shared_VD.Remotes.OpenDoorTerminal.OnClientEvent:Connect(function(open: boolean, pos)
+	PromptPosition = pos
+	
+	--print(DoorTerminal)
+	
+	if (open and not DoorTerminal) then
+		DoorTerminal = DoorTerminalUI.Load(Configuration.TerminalCooldownTime)
+		
+		HumanoidConn = Player.Character:FindFirstChildOfClass("Humanoid").Died:Once(function()
+			DoorTerminal = DoorTerminal:Unload()
+		end)
+		
+		CharacterConn = Player.Character.Destroying:Once(function()
+			DoorTerminal = DoorTerminal:Unload()
+		end)
+		
+		DoorTerminal.Callback = function()
+			DoorTerminal = nil
+		end
+	end
+end)
+	
+Heartbeat = RunService.Heartbeat:Connect(function(dT) 
+	if (DoorTerminal) then
+		DoorTerminal:Update(dT)
+	
+		if (Player.Character) then
+			if (Player.Character.PrimaryPart.Position - PromptPosition).Magnitude > 10 then
+				DoorTerminal = DoorTerminal:Unload()
+
+				HumanoidConn:Disconnect()
+				CharacterConn:Disconnect()
+			end
+		else
+			DoorTerminal = DoorTerminal:Unload()
+			
+			HumanoidConn:Disconnect()
+			CharacterConn:Disconnect()
+		end
+	end
+end)
+
+local Binded = false
+
+if (UIStyle ~= "Classic") then
+	ProximityPromptService.PromptShown:Connect(function(prompt: ProximityPrompt, inputType: Enum.ProximityPromptInputType) 
+		local Connections = {}
+		local DoorModel = prompt:FindFirstAncestorOfClass("Model")
+		
+		if (prompt.Style ~= Enum.ProximityPromptStyle.Custom) then
+			return
+		end
+		
+		if (not DoorModel) then
+			return
+		end
+		
+		UIStyle = Shared_VD.Configuration:GetAttribute("StyleOverride") or UIStyle
+		
+		if (Shared_VD.Configuration:GetAttribute("StyleOverride") ~= nil) then
+			LoadedUIStyles = require(Shared_VD.UIStyles:FindFirstChild(UIStyle))
+		end
+		
+		if (UserInputService.TouchEnabled and UserInputService:GetLastInputType() == Enum.UserInputType.Touch) then
+			if not Binded then
+				Binded = true
+
+				local function func(actionName, inputState, inputObject)
+					if (inputState == Enum.UserInputState.Begin) then
+						prompt:InputHoldBegin()
+					elseif (inputState == Enum.UserInputState.End) then
+						prompt:InputHoldEnd()
+					end
+				end
+
+				ContextActionUtility:BindAction("InteractDoorSystem", func, true)
+				ContextActionUtility:SetImage("InteractDoorSystem", "rbxassetid://139922772950738")
+			end
+		end
+		
+		local UIThread = UILoader.Load(LoadedUIStyles, prompt, DoorModel, prompt:IsDescendantOf(workspace.DoorsContainer), Configuration.InteractKeycode.Name, getActiveGamepad())
+		
+		if (Configuration.TertiaryDebugMode) then
+			print(LoadedUIStyles[UIStyle], prompt:IsDescendantOf(workspace.DoorsContainer))
+		end
+		
+		prompt.PromptHidden:Once(function()
+			for _, v in pairs(Connections) do
+				v:Disconnect()
+			end
+			
+			UIThread:Unload(UIStyle)
+			
+			Binded = false
+			
+			ContextActionUtility:UnbindAction("InteractDoorSystem")
+		end)
+		
+		Connections[#Connections + 1] = RunService.Heartbeat:Connect(function(dT) 
+			UIThread:Update(dT)
+		end)
+		
+		Connections[#Connections + 1] = prompt.Triggered:Connect(function() 
+			UIThread:Triggered()
+		end)
+		
+		Connections[#Connections + 1] = prompt.PromptButtonHoldBegan:Connect(function() 
+			UIThread:HoldBegan()
+		end)
+		Connections[#Connections + 1] = prompt.PromptButtonHoldEnded:Connect(function() 
+			UIThread:HoldEnded()
+		end)
+	end)
+end
+
+-- Put in StarterPlayerScripts
